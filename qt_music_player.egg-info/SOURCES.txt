@@ -1,0 +1,7 @@
+main.py
+pyproject.toml
+qt_music_player.egg-info/PKG-INFO
+qt_music_player.egg-info/SOURCES.txt
+qt_music_player.egg-info/dependency_links.txt
+qt_music_player.egg-info/requires.txt
+qt_music_player.egg-info/top_level.txt

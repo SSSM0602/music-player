@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: qt-music-player
+Version: 0.1.0
+Summary: A Qt-based music player that can stream and download audio using yt-dlp
+Author: Your Name
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: PySide6
+Requires-Dist: yt-dlp

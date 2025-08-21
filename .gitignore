@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.env
+.venv/
+
+# Qt
+*.qrc
+*.pyc
+*.pyo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# uv cache
+.uv/
+

@@ -1,0 +1,20 @@
+[project]
+name = "qt-music-player"
+version = "0.1.0"
+description = "A Qt-based music player that can stream and download audio using yt-dlp"
+authors = [{ name = "Your Name" }]
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+    "PySide6",
+    "yt-dlp",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.uv.pip]
+python = ">=3.10"
+
