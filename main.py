@@ -1,289 +1,142 @@
-
-# main.py
-# Qt music player starter that can STREAM from YouTube (audio-only) and DOWNLOAD using yt-dlp.
-# Requirements: Python 3.10+, PySide6, yt-dlp, ffmpeg (for post-processing to mp3/m4a)
-
 import sys
-import os
-from pathlib import Path
-from typing import Optional
-
-from PySide6.QtCore import Qt, QUrl, Signal, QObject
+import requests
+import yt_dlp
 from PySide6.QtWidgets import (
-    QApplication,
-    QWidget,
-    QLineEdit,
-    QPushButton,
-    QLabel,
-    QVBoxLayout,
-    QHBoxLayout,
-    QFileDialog,
-    QProgressBar,
-    QMessageBox,
+    QApplication, QMainWindow, QWidget,
+    QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFileDialog, QLineEdit
 )
+from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Qt, QUrl
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
-try:
-    from yt_dlp import YoutubeDL
-except Exception as e:
-    YoutubeDL = None
 
-
-class YTDLPWorker(QObject):
-    progress = Signal(float)  # 0-100
-    message = Signal(str)
-    finished = Signal(bool, str)  # success, path_or_error
-
-    def __init__(self, download_dir: Path):
-        super().__init__()
-        self.download_dir = download_dir
-
-    def _ydl(self, opts: dict) -> YoutubeDL:
-        return YoutubeDL(opts)
-
-    def best_audio_stream_url(self, url: str) -> Optional[str]:
-        opts = {"quiet": True, "nocheckcertificate": True}
-        with self._ydl(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            # Pick best audio-only format with highest abr
-            audio_formats = [f for f in info.get("formats", []) if f.get("acodec") != "none" and f.get("vcodec") == "none"]
-            if not audio_formats:
-                # Fallback: allow muxed if no audio-only
-                audio_formats = [f for f in info.get("formats", []) if f.get("acodec") != "none"]
-            if not audio_formats:
-                return None
-            best = max(audio_formats, key=lambda f: (f.get("abr") or 0, f.get("tbr") or 0))
-            return best.get("url")
-
-    def download(self, url: str, audio_format: str = "mp3"):
-        # Ensure directory exists
-        self.download_dir.mkdir(parents=True, exist_ok=True)
-
-        def hook(d):
-            if d.get('status') == 'downloading':
-                p = d.get('downloaded_bytes') or 0
-                t = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
-                if t:
-                    self.progress.emit(float(p) * 100.0 / float(t))
-            elif d.get('status') == 'finished':
-                self.progress.emit(100.0)
-
-        outtmpl = str(self.download_dir / '%(title)s.%(ext)s')
-        # Convert to chosen audio format using ffmpeg (must be installed)
-        post = [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': audio_format,
-            'preferredquality': '0'
-        }]
-
-        opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': outtmpl,
-            'noprogress': True,
-            'quiet': True,
-            'nocheckcertificate': True,
-            'postprocessors': post,
-            'progress_hooks': [hook],
-        }
-
-        try:
-            with self._ydl(opts) as ydl:
-                result = ydl.download([url])
-            # yt-dlp returns 0 on success
-            if result == 0:
-                self.finished.emit(True, str(self.download_dir))
-            else:
-                self.finished.emit(False, 'Download failed')
-        except Exception as e:
-            self.finished.emit(False, str(e))
-
-
-class MainWindow(QWidget):
+class MusicPlayer(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Qt Music Player (YouTube)")
-        self.resize(720, 420)
+        self.setWindowTitle("Qt Music Player")
+        self.setFixedSize(500, 500)
 
-        # UI Elements
+        # Central widget + layout
+        central = QWidget()
+        self.setCentralWidget(central)
+        layout = QVBoxLayout(central)
+
+        # Album art placeholder
+        self.album_label = QLabel()
+        self.album_label.setAlignment(Qt.AlignCenter)
+        pixmap = QPixmap(200, 200)
+        pixmap.fill(Qt.darkGray)
+        self.album_label.setPixmap(pixmap)
+        layout.addWidget(self.album_label)
+
+        # Song title
+        self.song_label = QLabel("No song loaded")
+        self.song_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.song_label)
+
+        # YouTube input
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("Paste YouTube URL (video, music, playlist item)...")
+        self.url_input.setPlaceholderText("Paste YouTube URL here...")
+        layout.addWidget(self.url_input)
 
-        self.stream_btn = QPushButton("Stream")
-        self.download_btn = QPushButton("Download")
-        self.pick_dir_btn = QPushButton("Set Download Folder")
+        # Controls
+        controls = QHBoxLayout()
+        self.prev_btn = QPushButton("⏮")
+        self.play_btn = QPushButton("▶️")
+        self.next_btn = QPushButton("⏭")
+        self.open_btn = QPushButton("📂")
+        self.yt_btn = QPushButton("▶️ YouTube")
 
-        self.status_label = QLabel("Ready")
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 100)
-        self.progress.setValue(0)
+        for btn in (self.prev_btn, self.play_btn, self.next_btn, self.open_btn, self.yt_btn):
+            btn.setFixedSize(80, 40)
+            controls.addWidget(btn)
 
-        # Media Player
-        self.audio_output = QAudioOutput()
+        layout.addLayout(controls)
+
+        # Media player setup
         self.player = QMediaPlayer()
+        self.audio_output = QAudioOutput()
         self.player.setAudioOutput(self.audio_output)
 
-        # Basic transport controls
-        self.play_btn = QPushButton("Play")
-        self.pause_btn = QPushButton("Pause")
-        self.stop_btn = QPushButton("Stop")
+        # Button connections
+        self.play_btn.clicked.connect(self.toggle_play)
+        self.prev_btn.clicked.connect(self.prev_track)
+        self.next_btn.clicked.connect(self.next_track)
+        self.open_btn.clicked.connect(self.open_file)
+        self.yt_btn.clicked.connect(self.play_youtube)
 
-        # Layout
-        top = QHBoxLayout()
-        top.addWidget(QLabel("URL:"))
-        top.addWidget(self.url_input)
+        self.is_playing = False
+        self.playlist = []  # list of file paths or stream URLs
+        self.current_index = -1
 
-        buttons = QHBoxLayout()
-        buttons.addWidget(self.stream_btn)
-        buttons.addWidget(self.download_btn)
-        buttons.addWidget(self.pick_dir_btn)
+    def open_file(self):
+        file, _ = QFileDialog.getOpenFileName(self, "Open Audio File", "", "Audio Files (*.mp3 *.wav *.m4a)")
+        if file:
+            self.playlist = [file]
+            self.current_index = 0
+            self.load_track(file)
 
-        transport = QHBoxLayout()
-        transport.addWidget(self.play_btn)
-        transport.addWidget(self.pause_btn)
-        transport.addWidget(self.stop_btn)
-
-        root = QVBoxLayout(self)
-        root.addLayout(top)
-        root.addLayout(buttons)
-        root.addWidget(self.status_label)
-        root.addWidget(self.progress)
-        root.addLayout(transport)
-
-        # State
-        self.download_dir = Path.cwd() / "downloads"
-        self.worker = YTDLPWorker(self.download_dir)
-
-        # Signals
-        self.stream_btn.clicked.connect(self.on_stream)
-        self.download_btn.clicked.connect(self.on_download)
-        self.pick_dir_btn.clicked.connect(self.on_pick_dir)
-        self.play_btn.clicked.connect(self.player.play)
-        self.pause_btn.clicked.connect(self.player.pause)
-        self.stop_btn.clicked.connect(self.player.stop)
-
-        self.player.playbackStateChanged.connect(self.on_state)
-        self.player.errorOccurred.connect(self.on_error)
-
-        # Worker signals
-        self.worker.progress.connect(lambda p: self.progress.setValue(int(p)))
-        self.worker.message.connect(self.set_status)
-        self.worker.finished.connect(self.on_download_finished)
-
-        if YoutubeDL is None:
-            QMessageBox.critical(self, "Missing dependency", "yt-dlp is not installed. Run: pip install yt-dlp")
-
-    def set_status(self, text: str):
-        self.status_label.setText(text)
-
-    def on_state(self, state):
-        # Update UI status lightly
-        st = {QMediaPlayer.PlayingState: "Playing", QMediaPlayer.PausedState: "Paused", QMediaPlayer.StoppedState: "Stopped"}.get(state, "")
-        if st:
-            self.set_status(st)
-
-    def on_error(self, error, error_string):
-        if error:
-            QMessageBox.warning(self, "Playback error", error_string)
-
-    def on_pick_dir(self):
-        path = QFileDialog.getExistingDirectory(self, "Choose download folder", str(self.download_dir))
-        if path:
-            self.download_dir = Path(path)
-            self.worker.download_dir = self.download_dir
-            self.set_status(f"Download dir: {self.download_dir}")
-
-    def on_stream(self):
+    def play_youtube(self):
         url = self.url_input.text().strip()
         if not url:
             return
-        self.setEnabled(False)
-        self.set_status("Resolving audio stream...")
 
-        # Use a lightweight thread via QtConcurrent to avoid freezing UI
-        from concurrent.futures import ThreadPoolExecutor
-        executor = ThreadPoolExecutor(max_workers=1)
+        # Extract best audio + metadata with yt-dlp
+        ydl_opts = {"format": "bestaudio/best", "quiet": True}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            audio_url = info["url"]  # direct stream URL
+            title = info.get("title", "YouTube Audio")
+            thumbnail_url = info.get("thumbnail")
 
-        def task():
+        self.playlist = [audio_url]
+        self.current_index = 0
+        self.load_track(audio_url, title, thumbnail_url)
+
+    def load_track(self, file_or_url, title=None, thumbnail_url=None):
+        url = QUrl(file_or_url) if "http" in file_or_url else QUrl.fromLocalFile(file_or_url)
+        self.player.setSource(url)
+        self.song_label.setText(title if title else file_or_url.split("/")[-1])
+        self.play_btn.setText("▶️")
+        self.is_playing = False
+
+        # Load album art if available
+        if thumbnail_url:
             try:
-                s_url = self.worker.best_audio_stream_url(url)
-                return True, s_url
+                img_data = requests.get(thumbnail_url).content
+                pixmap = QPixmap()
+                pixmap.loadFromData(img_data)
+                scaled = pixmap.scaled(200, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                self.album_label.setPixmap(scaled)
             except Exception as e:
-                return False, str(e)
+                print("Failed to load thumbnail:", e)
 
-        future = executor.submit(task)
-
-        def done(_):
-            self.setEnabled(True)
-            ok, data = future.result()
-            if not ok or not data:
-                QMessageBox.warning(self, "Stream error", data or "No playable audio format found")
-                self.set_status("Ready")
-                return
-            # Play via QMediaPlayer directly from remote URL
-            self.player.setSource(QUrl(data))
-            self.player.play()
-            self.set_status("Streaming from YouTube")
-
-        # Use a single-shot timer to poll completion (keeps it simple without signals)
-        from PySide6.QtCore import QTimer
-        def poll():
-            if future.done():
-                done(None)
-            else:
-                QTimer.singleShot(100, poll)
-        QTimer.singleShot(0, poll)
-
-    def on_download(self):
-        url = self.url_input.text().strip()
-        if not url:
-            return
-        if YoutubeDL is None:
-            QMessageBox.critical(self, "Missing dependency", "yt-dlp is not installed. Run: pip install yt-dlp")
+    def toggle_play(self):
+        if self.current_index == -1:
             return
 
-        self.progress.setValue(0)
-        self.set_status("Downloading...")
-        self.setEnabled(False)
-
-        from concurrent.futures import ThreadPoolExecutor
-        executor = ThreadPoolExecutor(max_workers=1)
-
-        def task():
-            self.worker.download(url, audio_format="mp3")
-
-        future = executor.submit(task)
-
-        from PySide6.QtCore import QTimer
-        def poll():
-            if future.done():
-                self.setEnabled(True)
-                # worker.finished will update final status
-            else:
-                QTimer.singleShot(150, poll)
-        QTimer.singleShot(0, poll)
-
-    def on_download_finished(self, success: bool, path_or_error: str):
-        self.setEnabled(True)
-        if success:
-            self.set_status(f"Saved to: {self.download_dir}")
-            QMessageBox.information(self, "Done", f"Audio saved in: {self.download_dir}")
+        if self.is_playing:
+            self.player.pause()
+            self.play_btn.setText("▶️")
+            self.is_playing = False
         else:
-            self.set_status("Ready")
-            QMessageBox.warning(self, "Download error", path_or_error)
+            self.player.play()
+            self.play_btn.setText("⏸")
+            self.is_playing = True
+
+    def prev_track(self):
+        if self.playlist and self.current_index > 0:
+            self.current_index -= 1
+            self.load_track(self.playlist[self.current_index])
+
+    def next_track(self):
+        if self.playlist and self.current_index < len(self.playlist) - 1:
+            self.current_index += 1
+            self.load_track(self.playlist[self.current_index])
 
 
-def main():
+if __name__ == "__main__":
     app = QApplication(sys.argv)
-    w = MainWindow()
-    w.show()
+    player = MusicPlayer()
+    player.show()
     sys.exit(app.exec())
-
-
-if __name__ == '__main__':
-    main()
-
-# -----------------------------
-# requirements.txt (example)
-# PySide6>=6.6
-# yt-dlp>=2024.7.7
-# (Install ffmpeg separately: https://ffmpeg.org/)
